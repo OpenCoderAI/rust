@@ -526,6 +526,13 @@ impl<'tcx> Visitor<'tcx> for ExtraComments<'tcx> {
     }
 }
 
+fn file_location(tcx: TyCtxt<'_>, span: Span, function_span: Span) -> String {
+    let relative = tcx.sess.opts.unstable_opts.mir_pretty_relative_line_numbers;
+    let floc = tcx.sess.source_map().span_to_file_and_location(span, Some(function_span), relative);
+
+    format!("{:?}", floc)
+}
+
 fn comment(tcx: TyCtxt<'_>, SourceInfo { span, scope }: SourceInfo, function_span: Span) -> String {
     let location = if tcx.sess.opts.unstable_opts.mir_pretty_relative_line_numbers {
         tcx.sess.source_map().span_to_relative_line_string(span, function_span)
@@ -601,6 +608,15 @@ fn write_scope_tree(
             local_name,
             comment(tcx, local_decl.source_info, body.span),
         )?;
+
+        // output in a easier to process format for mutations
+        let SourceInfo { span, scope } = local_decl.source_info;
+        let scope_id = scope.index();
+        let var_type = format!("{0:1$}// OCAI ## {2:?} ## {3:?} ## {4} ## {5}", INDENT, indent,
+                               local, local_decl.ty, scope_id,
+                               file_location(tcx, span, body.span),
+                               );
+        writeln!(w, "{}", var_type)?;
     }
 
     let Some(children) = scope_tree.get(&parent) else {

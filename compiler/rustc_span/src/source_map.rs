@@ -164,6 +164,46 @@ pub(super) struct SourceMapFiles {
     stable_id_to_source_file: FxHashMap<StableSourceFileId, Lrc<SourceFile>>,
 }
 
+pub struct FileLocationCoords {
+    is_relative: bool,
+    fname: String,
+    lno_start: usize,
+    lno_end: usize,
+    col_start: usize,
+    col_end: usize,
+    container: Option<Box<FileLocationCoords>>,
+}
+
+impl FileLocationCoords {
+    fn empty() -> FileLocationCoords {
+        FileLocationCoords {
+            is_relative: false,
+            fname: "no file".to_string(),
+            lno_start: 0,
+            lno_end: 0,
+            col_start: 0,
+            col_end: 0,
+            container: None,
+        }
+    }
+}
+
+impl fmt::Debug for FileLocationCoords {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let relative_indicator = if self.is_relative { "+" } else { "" };
+        let container = if let Some(c) = &self.container { format!("{:?}", c) } else { "--".to_string() };
+        write!(f, "{} ## {}{}:{} ## {}{}:{} ## {}", self.fname,
+               relative_indicator,
+               self.lno_start,
+               self.col_start,
+               relative_indicator,
+               self.lno_end,
+               self.col_end,
+               container,
+               )
+    }
+}
+
 pub struct SourceMap {
     /// The address space below this value is currently used by the files in the source map.
     used_address_space: AtomicU32,
@@ -460,6 +500,57 @@ impl SourceMap {
                 format!(": {}:{}", hi.line, hi.col.to_usize() + 1)
             }
         )
+    }
+
+    pub fn span_to_file_and_location(&self, sp: Span, fun: Option<Span>, relative: bool) -> FileLocationCoords {
+        if self.files.borrow().source_files.is_empty() || sp.is_dummy() {
+            return FileLocationCoords::empty();
+        }
+
+        let lo = self.lookup_char_pos(sp.lo());
+        let hi = self.lookup_char_pos(sp.hi());
+        let fname = lo.file.name.display(FileNameDisplayPreference::Remapped).to_string();
+        let (is_relative, lno_start, lno_end) = if relative {
+            if let Some(rel_fun) = fun {
+                if rel_fun.is_dummy() {
+                    return FileLocationCoords::empty();
+                }
+
+                let offset = self.lookup_char_pos(rel_fun.lo());
+
+                if lo.file.name != offset.file.name || !rel_fun.contains(sp) {
+                    // TODO: is this correct??
+                    // In the original function `span_to_relative_line_string`
+                    // we return self.span_to_embeddable_string(sp);
+                    (false, lo.line, hi.line)
+                } else {
+                    let lo_line = lo.line.saturating_sub(offset.line);
+                    let hi_line = hi.line.saturating_sub(offset.line);
+                    (true, lo_line, hi_line)
+                }
+            } else {
+                (false, lo.line, hi.line)
+            }
+        } else {
+            (false, lo.line, hi.line)
+        };
+
+        let col_start = lo.col.to_usize() + 1;
+        let col_end = hi.col.to_usize() + 1;
+        let container = if let Some(some_fn) = fun {
+            Some(Box::new(self.span_to_file_and_location(some_fn, None, false)))
+        } else {
+            None
+        };
+        FileLocationCoords {
+            is_relative,
+            fname,
+            lno_start,
+            lno_end,
+            col_start,
+            col_end,
+            container,
+        }
     }
 
     /// Format the span location suitable for embedding in build artifacts
